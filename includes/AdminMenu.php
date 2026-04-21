@@ -6,7 +6,7 @@ class AdminMenu {
     public function __construct() {
         add_action('admin_menu', array($this, 'add_menu_pages'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_assets'));
-        add_action('admin_bar_menu', array($this, 'add_admin_bar_brand'), 6);
+        add_action('admin_bar_menu', array($this, 'add_admin_bar_brand'), 999);
         add_action('admin_head', array($this, 'hide_wordpress_submenu'));
         add_action('admin_head', array($this, 'inject_plugin_favicon'));
         add_action('admin_init', array($this, 'maybe_handle_connect_flow'));
@@ -135,6 +135,7 @@ class AdminMenu {
 
         $wp_admin_bar->add_node(array(
             'id' => 'wapid-automation-brand',
+            'parent' => 'top-secondary',
             'title' => $title,
             'href' => admin_url('admin.php?page=wapid-automation-for-woocommerce'),
             'meta' => array(
@@ -479,13 +480,33 @@ class AdminMenu {
             return;
         }
 
+        if (!isset($_GET['wa_connect']) && !isset($_GET['wa_access_token']) && !isset($_GET['wa_auth_error'])) {
+            return;
+        }
+
         if (isset($_GET['wa_connect'])) {
-            $redirect_to = admin_url('admin.php?page=wapid-automation-for-woocommerce-settings');
+            check_admin_referer('whatsapp_automation_connect');
+
+            $current_user_id = get_current_user_id();
+            if ($current_user_id <= 0) {
+                $this->redirect_notice('error', __('Authentication failed. Please try again.', 'wapid-automation-for-woocommerce'), 'wapid-automation-for-woocommerce-settings');
+            }
+
+            $state = $this->create_connect_state($current_user_id);
+            $redirect_to = add_query_arg(
+                array(
+                    'page' => 'wapid-automation-for-woocommerce-settings',
+                    'wa_connect_callback' => 1,
+                ),
+                admin_url('admin.php')
+            );
             $external = add_query_arg(
                 array(
                     'source' => 'wp_plugin',
                     'site' => site_url('/'),
                     'redirect_to' => $redirect_to,
+                    'state' => $state,
+                    'wa_state' => $state,
                 ),
                 $this->get_connect_url()
             );
@@ -493,10 +514,20 @@ class AdminMenu {
             exit;
         }
 
+        $has_callback_payload = isset($_GET['wa_access_token']) || isset($_GET['wa_auth_error']);
+        if ($has_callback_payload) {
+            $state = sanitize_text_field(wp_unslash($_GET['state'] ?? $_GET['wa_state'] ?? ''));
+            $current_user_id = get_current_user_id();
+            if (!$this->consume_connect_state($current_user_id, $state)) {
+                whatsapp_automation_log('Connect callback rejected due to invalid or missing state.', 'warn');
+                $this->redirect_notice('error', __('Authentication failed. Please reconnect and try again.', 'wapid-automation-for-woocommerce'), 'wapid-automation-for-woocommerce-settings');
+            }
+        }
+
         if (isset($_GET['wa_access_token'])) {
             $access_token = sanitize_text_field(wp_unslash($_GET['wa_access_token']));
             $refresh_token = sanitize_text_field(wp_unslash($_GET['wa_refresh_token'] ?? ''));
-            $expires_in = (int) sanitize_text_field(wp_unslash($_GET['wa_expires_in'] ?? '900'));
+            $expires_in = absint($_GET['wa_expires_in'] ?? 900);
 
             if ($access_token !== '') {
                 update_option('whatsapp_automation_access_token', $access_token);
@@ -525,6 +556,32 @@ class AdminMenu {
             }
             $this->redirect_notice('error', $error_message, 'wapid-automation-for-woocommerce-settings');
         }
+    }
+
+    private function create_connect_state($user_id) {
+        $state = wp_generate_password(32, false, false);
+        set_transient($this->get_connect_state_transient_key($user_id), $state, 15 * MINUTE_IN_SECONDS);
+        return $state;
+    }
+
+    private function consume_connect_state($user_id, $state) {
+        if ($user_id <= 0 || $state === '') {
+            return false;
+        }
+
+        $transient_key = $this->get_connect_state_transient_key($user_id);
+        $expected_state = get_transient($transient_key);
+        delete_transient($transient_key);
+
+        if (!is_string($expected_state) || $expected_state === '') {
+            return false;
+        }
+
+        return hash_equals($expected_state, $state);
+    }
+
+    private function get_connect_state_transient_key($user_id) {
+        return 'wa_connect_state_' . absint($user_id);
     }
 
     private function get_supported_events() {

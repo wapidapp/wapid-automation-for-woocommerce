@@ -88,7 +88,8 @@ function whatsapp_automation_admin_shell_start($title, $subtitle = '') {
                                         </button>
                                     </form>
                                 <?php else : ?>
-                                    <a class="button button-primary wa-btn-connect" href="<?php echo esc_url(admin_url('admin.php?page=wapid-automation-for-woocommerce-settings&wa_connect=1')); ?>">
+                                    <?php $wa_connect_url = wp_nonce_url(admin_url('admin.php?page=wapid-automation-for-woocommerce-settings&wa_connect=1'), 'whatsapp_automation_connect'); ?>
+                                    <a class="button button-primary wa-btn-connect" href="<?php echo esc_url($wa_connect_url); ?>">
                                         <?php esc_html_e('Connect', 'wapid-automation-for-woocommerce'); ?>
                                     </a>
                                 <?php endif; ?>
